@@ -46,6 +46,20 @@ I split the problem into three concerns: what inventory exists, what can be ship
 
 For restocking, rather than duplicating allocation logic, I replayed pending orders through `process_order` directly, which kept the fulfillment logic in one place.
 
+## Main Focus
+
+The primary focus of this implementation was correct and predictable state management.
+
+This system is inherently stateful: inventory changes over time, orders may be partially fulfilled, and pending orders must be replayed when new inventory arrives. I prioritized making these state transitions explicit, deterministic, and easy to reason about.
+
+In particular, I focused on:
+- Ensuring inventory is mutated at the correct time to avoid double allocation
+- Preserving FIFO behavior when replaying pending orders
+- Maintaining invariants (no negative inventory, no overweight shipments)
+- Making shipment splitting predictable and testable
+
+Rather than optimizing for performance or implementing advanced packing heuristics, I chose clarity and correctness under the given constraints.
+
 ## Extensibility
 
 Each method has a single responsibility, the state shape is plain dicts with documented structure, and the two most likely extension points (`ship_package` and `_pack_shipments`) are isolated so either can be swapped out without touching the rest of the system.
@@ -66,6 +80,7 @@ If productionized, I would:
 - Implement structured logging and metrics
 - Replace in-memory storage with a database
 - Add concurrency controls to prevent race conditions
+- Optimize the packing algorithm (the current greedy strategy is simple and deterministic, but a first-fit decreasing or dynamic programming approach would reduce the number of packages for large mixed-product orders)
 
 ## AI Usage
 
