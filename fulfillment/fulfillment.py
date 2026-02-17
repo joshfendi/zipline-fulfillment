@@ -8,10 +8,6 @@ Validation rules:
 
 Packing constraint:
 - MAX_PACKAGE_G = 1800  # grams (1.8kg); no single package shipped may exceed this.
-
-NOTE: The real `ship_package` would feed a packing UI. For the take-home the stub
-should log the shipment; logging is used instead of print so the output is structured
-and can be captured in test logs or redirected more easily in production.
 """
 
 from typing import List, Dict, Deque, Any
@@ -78,12 +74,28 @@ class FulfillmentSystem:
           - self.catalog populated with product metadata
           - self.inventory initialized with 0 for every product_id in catalog
 
-        Validation policy (documented, not implemented here):
-          - Duplicate product_id -> raise ValueError
-          - Product with mass_g > MAX_PACKAGE_G -> raise ValueError
+        Raises:
+          - ValueError if duplicate product_id or if mass_g exceeds MAX_PACKAGE_G.
         """
-        # TODO: implement catalog population and inventory zeroing
-        pass
+
+        # Reset state in case of re-initialization
+        self.catalog.clear()
+        self.inventory.clear()
+
+        for product in product_info:
+            pid = int(product["product_id"])
+            mass = int(product["mass_g"])
+            name = product["product_name"]
+
+            # Validate catalog entries
+            if pid in self.catalog:
+                raise ValueError(f"Duplicate product_id in catalog: {pid}")
+            if mass > MAX_PACKAGE_G:
+                raise ValueError(f"Product {pid} mass {mass}g exceeds MAX_PACKAGE_G {MAX_PACKAGE_G}g")
+            
+            # Initialize catalog and inventory
+            self.catalog[pid] = {"mass_g": mass, "product_name": name}
+            self.inventory[pid] = 0  # Initialize inventory to 0 for each product_id
 
     def process_order(self, order: Dict[str, Any]) -> None:
         """
@@ -106,7 +118,6 @@ class FulfillmentSystem:
           - If some items cannot be fulfilled, append a pending order entry to self.pending_orders
           - Record request/ship events in self.orders_log for debugging/audit
         """
-        # TODO: implement order allocation, partial fulfillment, packing, and enqueuing
         pass
 
     def process_restock(self, restock: List[Dict[str, Any]]) -> None:
