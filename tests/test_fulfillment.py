@@ -1,5 +1,6 @@
 # tests/test_fulfillment.py
 import pytest
+from collections import deque
 from fulfillment.fulfillment import FulfillmentSystem, MAX_PACKAGE_G
 
 # ---------------------------------------------------------------------
@@ -236,3 +237,108 @@ def test_process_order_negative_quantity_raises():
 
     with pytest.raises(ValueError):
         system.process_order(order)
+
+
+# ---------------------------------------------------------------------
+# process_restock tests
+# ---------------------------------------------------------------------
+def _simple_packer(items_to_ship):
+    """Return a single package containing the entire items_to_ship map."""
+    if not items_to_ship:
+        return []
+    return [dict(items_to_ship)]
+
+
+def test_process_restock_completes_pending_order():
+    system = FulfillmentSystem()
+
+    # Catalog / initial inventory: product 1 exists but inventory is 0
+    system.catalog = {1: {"mass_g": 500, "product_name": "P1"}}
+    system.inventory = {1: 0}
+
+    # Pending order: request 2 units remaining
+    system.pending_orders = deque([{"order_id": 20, "remaining": {1: 2}}])
+
+    # Make packing deterministic and capture shipments
+    system._pack_shipments = _simple_packer
+    shipped = []
+    system.ship_package = lambda s: shipped.append(s)
+
+    # Restock exactly 2 units -> should fully satisfy pending order
+    restock_payload = [{"product_id": 1, "quantity": 2}]
+    system.process_restock(restock_payload)
+
+    # One shipment should have been sent for order_id 20 with 2 units
+    assert len(shipped) == 1
+    assert shipped[0]["order_id"] == 20
+    assert shipped[0]["shipped"] == [{"product_id": 1, "quantity": 2}]
+
+    # Pending queue should be empty
+    assert len(system.pending_orders) == 0
+
+    # Inventory should be zero (2 restocked, 2 shipped)
+    assert system.inventory[1] == 0
+
+
+def test_process_restock_partial_fulfill_updates_pending():
+    system = FulfillmentSystem()
+
+    system.catalog = {1: {"mass_g": 500, "product_name": "P1"}}
+    system.inventory = {1: 0}
+
+    # Pending order: request 5 units remaining
+    system.pending_orders = deque([{"order_id": 21, "remaining": {1: 5}}])
+
+    system._pack_shipments = _simple_packer
+    shipped = []
+    system.ship_package = lambda s: shipped.append(s)
+
+    # Restock only 3 units -> should ship 3 and leave pending of 2
+    system.process_restock([{"product_id": 1, "quantity": 3}])
+
+    # One shipment of 3 units
+    assert len(shipped) == 1
+    assert shipped[0]["shipped"] == [{"product_id": 1, "quantity": 3}]
+
+    # Inventory should be 0 after allocation
+    assert system.inventory[1] == 0
+
+    # Pending queue should contain remaining 2 units for order 21
+    assert len(system.pending_orders) == 1
+    pending = system.pending_orders[0]
+    assert pending["order_id"] == 21
+    assert pending["remaining"] == {1: 2}
+
+
+def test_process_restock_ignores_zero_quantity_restocks():
+    system = FulfillmentSystem()
+
+    system.catalog = {1: {"mass_g": 500, "product_name": "P1"}}
+    system.inventory = {1: 0}
+
+    # Pending order exists
+    system.pending_orders = deque([{"order_id": 22, "remaining": {1: 2}}])
+
+    # Use a restock with a zero-quantity line (should be ignored)
+    system._pack_shipments = _simple_packer
+    shipped = []
+    system.ship_package = lambda s: shipped.append(s)
+
+    system.process_restock([{"product_id": 1, "quantity": 0}])
+
+    # Nothing shipped, pending unchanged
+    assert len(shipped) == 0
+    assert len(system.pending_orders) == 1
+    assert system.pending_orders[0]["remaining"] == {1: 2}
+    assert system.inventory[1] == 0
+
+
+def test_process_restock_negative_quantity_raises():
+    system = FulfillmentSystem()
+
+    system.catalog = {1: {"mass_g": 500, "product_name": "P1"}}
+    system.inventory = {1: 0}
+
+    # Negative quantities should raise via the validator
+    with pytest.raises(ValueError):
+        system.process_restock([{"product_id": 1, "quantity": -5}])

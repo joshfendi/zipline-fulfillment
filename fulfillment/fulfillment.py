@@ -169,8 +169,30 @@ class FulfillmentSystem:
           - Iterate pending orders (FIFO) and attempt to fulfill them,
             shipping available items and updating/removing pending entries
         """
-        # TODO: implement restock handling and pending order reprocessing
-        pass
+        # Validate and add new inventory
+        for line in restock:
+            pid = int(line["product_id"])
+            qty = int(line["quantity"])
+
+            should_process = self._validate_line_item(pid, qty)
+            if not should_process:
+                continue
+
+            self.inventory[pid] += qty
+
+        # Re-attempt pending orders by replaying them through process_order
+        current_pending = self.pending_orders
+        self.pending_orders = deque()
+
+        while current_pending:
+            order = current_pending.popleft()
+            self.process_order({
+                "order_id": order["order_id"],
+                "requested": [
+                    {"product_id": pid, "quantity": qty}
+                    for pid, qty in order["remaining"].items()
+                ]
+            })
 
     def ship_package(self, shipment: Dict[str, Any]) -> None:
         """
