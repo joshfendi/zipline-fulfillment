@@ -12,20 +12,8 @@ Packing constraint:
 
 from typing import List, Dict, Deque, Any
 from collections import deque
-import logging
 
 MAX_PACKAGE_G = 1800
-
-# Configure module-level logger (consumers may reconfigure as needed)
-logger = logging.getLogger("fulfillment")
-if not logger.handlers:
-    # Basic configuration only for development/demo purposes
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-
 
 class FulfillmentSystem:
     """
@@ -35,7 +23,6 @@ class FulfillmentSystem:
       - catalog: product_id -> {"mass_g": int, "product_name": str}
       - inventory: product_id -> quantity (int)
       - pending_orders: deque of {"order_id": int, "remaining": {product_id: qty}}
-      - orders_log: product-order audit/history useful for debugging
 
     Input validation rules (see module docstring):
       - Unknown product_id -> raise ValueError
@@ -52,12 +39,8 @@ class FulfillmentSystem:
         self.inventory: Dict[int, int] = {}
 
         # deque of pending orders, FIFO:
-        # each entry: {"order_id": int, "remaining": {product_id: qty}, "original": {...}}
+        # each entry: {"order_id": int, "remaining": {product_id: qty}}
         self.pending_orders: Deque[Dict[str, Any]] = deque()
-
-        # orders_log: order_id -> metadata for debugging (requested, shipped_history, status)
-        # Lightweight in-memory for the take-home; in prod this would be persisted.
-        self.orders_log: Dict[int, Dict[str, Any]] = {}
 
     def init_catalog(self, product_info: List[Dict[str, Any]]) -> None:
         """
@@ -98,27 +81,77 @@ class FulfillmentSystem:
             self.inventory[pid] = 0  # Initialize inventory to 0 for each product_id
 
     def process_order(self, order: Dict[str, Any]) -> None:
-        """
-        Process an incoming order.
+      """
+      Process an incoming order.
 
-        Example order:
-        {
-          "order_id": 123,
-          "requested": [
-            {"product_id": 0, "quantity": 2},
-            {"product_id": 10, "quantity": 4}
-          ]
-        }
+      Expected order shape:
+      {
+        "order_id": 123,
+        "requested": [
+          {"product_id": 0, "quantity": 2},
+          {"product_id": 10, "quantity": 4}
+        ]
+      }
 
-        Responsibilities (to be implemented):
-          - Validate inputs per module rules (unknown id -> ValueError; negative -> ValueError; zero -> ignore)
-          - Attempt to allocate from self.inventory
-          - Ship available items immediately via ship_package (may require multiple packages)
-          - Ensure no package exceeds MAX_PACKAGE_G
-          - If some items cannot be fulfilled, append a pending order entry to self.pending_orders
-          - Record request/ship events in self.orders_log for debugging/audit
-        """
-        pass
+      Behavior:
+        - Validate each line via self._validate_line_item(product_id, quantity)
+        - Allocate available inventory immediately and create packages (via _pack_shipments)
+        - Call ship_package for each package
+        - If items remain unfulfilled, add a pending order entry
+      """
+      # Extract fields from incoming order
+      order_id = order.get("order_id")
+      requested_lines = order.get("requested", [])
+
+      # Build maps of what to ship now and what remains
+      to_ship_now: Dict[int, int] = {}     # product_id -> qty to ship immediately
+      remaining: Dict[int, int] = {}       # product_id -> qty that couldn't be fulfilled
+
+      # Validate and allocate from inventory for each requested line
+      for line in requested_lines:
+          pid = int(line["product_id"])
+          qty = int(line["quantity"])
+
+          # Validate per rules: unknown -> ValueError, negative -> ValueError, zero -> ignore
+          should_process = self._validate_line_item(pid, qty)
+          if not should_process:
+              # zero-quantity: ignore silently
+              continue
+
+          # Determine how much to allocate from inventory
+          available = self.inventory.get(pid, 0)
+          allocate = min(qty, available)
+
+          if allocate > 0:
+              to_ship_now[pid] = to_ship_now.get(pid, 0) + allocate
+              # Decrease inventory immediately, commit allocation now
+              self.inventory[pid] = available - allocate
+
+          # Can not satisfy the requested qty, record the remaining amount
+          if qty - allocate > 0:
+              remaining[pid] = remaining.get(pid, 0) + (qty - allocate)
+
+      # If there are items to ship now, pack them into packages and ship
+      if to_ship_now:
+          packages = self._pack_shipments(to_ship_now)  # returns list of {pid: qty} packages
+          for pkg in packages:
+              # Shape package into the expected ship_package format
+              shipped_items = []
+
+              for pid, qty in pkg.items():
+                  shipped_item = {
+                      "product_id": int(pid),
+                      "quantity": int(qty)
+                  }
+                  shipped_items.append(shipped_item)
+
+              shipment = {"order_id": order_id, "shipped": shipped_items}
+              self.ship_package(shipment)
+
+      # If anything remains unfulfilled, enqueue as a pending order entry
+      if remaining:
+          pending_entry = {"order_id": order_id, "remaining": dict(remaining)}
+          self.pending_orders.append(pending_entry)
 
     def process_restock(self, restock: List[Dict[str, Any]]) -> None:
         """
@@ -131,11 +164,10 @@ class FulfillmentSystem:
         ]
 
         Responsibilities (to be implemented):
-          - Validate inputs per module rules (unknown id -> ValueError; negative -> ValueError; zero -> ignore)
+          - Validate each line via self._validate_line_item(product_id, quantity)
           - Increment self.inventory for each restock item
           - Iterate pending orders (FIFO) and attempt to fulfill them,
             shipping available items and updating/removing pending entries
-          - Update self.orders_log with shipping events
         """
         # TODO: implement restock handling and pending order reprocessing
         pass
@@ -150,20 +182,49 @@ class FulfillmentSystem:
           "shipped": [
             {"product_id": 0, "quantity": 1},
             {"product_id": 10, "quantity": 2}
-          ],
-          "package_id": "optional-id"
+          ]
         }
 
-        Current behavior (scaffold):
-          - Log the shipment at INFO level using the module logger.
-          - Tests can capture/inspect logger output instead of stdout.
-
-        Note: use logging in place of print so outputs can be redirected and structured.
+        Behavior:
+          - Print the shipment
         """
-        # Minimal logging behavior for scaffold. Implementation may include richer metadata.
-        logger.info("ship_package: %s", shipment)
+        print(shipment)
 
     # ----- Helper methods (private) -----
+
+    def _validate_line_item(self, product_id: int,quantity: int) -> bool:
+      """
+      Validate a single order/restock line item according to module rules.
+
+      Rules:
+        - Unknown product_id -> raise ValueError
+        - Negative quantity -> raise ValueError
+        - Zero quantity -> ignore (return False)
+        - Positive quantity -> valid (return True)
+
+      Returns:
+          True if the item should be processed.
+          False if the quantity is zero and should be ignored.
+
+      Raises:
+          ValueError if validation fails.
+      """
+
+      # Unknown product_id
+      if product_id not in self.catalog:
+          raise ValueError(f"Unknown product_id: {product_id}")
+
+      # Negative quantity
+      if quantity < 0:
+          raise ValueError(f"Negative quantity not allowed: {quantity}")
+
+      # Zero quantity → ignore
+      if quantity == 0:
+          return False
+
+      # Valid positive quantity
+      return True
+
 
     def _pack_shipments(self, items_to_ship: Dict[int, int]) -> List[Dict[str, int]]:
         """
@@ -199,19 +260,3 @@ class FulfillmentSystem:
             packages.append(current_package)
 
         return packages
-
-    def _record_order_request(self, order: Dict[str, Any]) -> None:
-        """
-        Add an entry to orders_log for a newly received order.
-
-        Suggested structure (not enforced here):
-          self.orders_log[order_id] = {
-              "requested": {pid: qty, ...},
-              "shipped_history": [],  # list of shipments
-              "status": "pending" | "completed"
-          }
-
-        This helper keeps the logging/audit concern separate from allocation logic.
-        """
-        # TODO: implement lightweight orders_log recording for debugging/audit
-        pass
