@@ -165,19 +165,40 @@ class FulfillmentSystem:
 
     # ----- Helper methods (private) -----
 
-    def _pack_shipments(self, items_to_ship: Dict[int, int]) -> List[List[Dict[str, int]]]:
+    def _pack_shipments(self, items_to_ship: Dict[int, int]) -> List[Dict[str, int]]:
         """
         Split items_to_ship (product_id -> quantity) into a list of packages where
         each package is a list of {"product_id": int, "quantity": int} and the
         total mass of each package does not exceed MAX_PACKAGE_G.
 
-        Use a simple greedy packing strategy (unit-aware). Do NOT implement optimal
-        bin packing for the take-home.
-
-        NOTE: this is a stub in the scaffold. Implement the algorithm in the main task.
+        Greedy packing strategy
         """
-        # TODO: implement greedy unit-aware packing to respect MAX_PACKAGE_G
-        return []
+        packages = []
+        current_package = {}   # product_id -> quantity in this package
+        current_weight = 0
+
+        # Pack all items
+        for product_id, quantity in items_to_ship.items():
+            mass_g = self.catalog[product_id]["mass_g"]
+
+            for _ in range(quantity):
+                # Open a new package if this unit doesn't fit
+                if current_weight + mass_g > MAX_PACKAGE_G:
+                    packages.append(current_package)
+                    current_package = {}
+                    current_weight = 0
+
+                if product_id not in current_package:
+                    current_package[product_id] = 0
+                current_package[product_id] += 1
+                
+                current_weight += mass_g
+
+        # Add last package
+        if current_package:
+            packages.append(current_package)
+
+        return packages
 
     def _record_order_request(self, order: Dict[str, Any]) -> None:
         """
